@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"html/template"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -34,6 +33,18 @@ func (bc *Ebookcatalog) UseFolder(folder string) error {
 
 func (bc *Ebookcatalog) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Println("Serving")
+	if strings.HasSuffix(r.URL.Path, "/pic") {
+		for _, book := range bc.books {
+			if filepath.Base(book.Path) == filepath.Base(filepath.Dir(r.URL.Path)) {
+				if _, err := w.Write(book.image); err != nil {
+					log.Println(err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+				break
+			}
+		}
+		return
+	}
 	if "./"+filepath.Base(filepath.Dir(r.URL.String())) == bc.folder {
 		http.StripPrefix(filepath.ToSlash(filepath.Dir(r.URL.String())), http.FileServer(http.Dir(bc.folder))).ServeHTTP(w, r)
 		return
@@ -60,27 +71,27 @@ type RawBook struct {
 	Subject     string `xml:"metadata>subject"`
 	Description string `xml:"metadata>description"`
 	Language    string `xml:"metadata>language"`
-	Meta    	[]name `xml:"metadata>meta"`
-	Items    	[]item `xml:"manifest>item"`
+	Meta        []name `xml:"metadata>meta"`
+	Items       []item `xml:"manifest>item"`
 }
 
 type name struct {
 	Content string `xml:"content,attr"`
-	Name string `xml:"name,attr"`
+	Name    string `xml:"name,attr"`
 }
 type item struct {
 	Ref string `xml:"href,attr"`
-	Id string `xml:"id,attr"`
+	Id  string `xml:"id,attr"`
 }
 
 type Book struct {
-	Title       string 
-	Creator     string 
-	Subject     string 
-	Description string 
-	Language    string 
+	Title       string
+	Creator     string
+	Subject     string
+	Description string
+	Language    string
 	Path        string
-	Cover       string
+	image       []byte
 }
 
 func findAndRead(file string, r *zip.ReadCloser) ([]byte, error) {
@@ -143,11 +154,10 @@ func (bc *Ebookcatalog) extract(path string, info os.FileInfo, err error) error 
 		return err
 	}
 	Path := filepath.ToSlash(path)
-	
-	//Cover quest
+
 	//Searching for <meta name="cover" id="..." \> to get needed item id
 	id := ""
-	cover := ""
+	coverPath := ""
 	for _, m := range b.Meta {
 		if m.Name == "cover" {
 			id = m.Content
@@ -157,47 +167,25 @@ func (bc *Ebookcatalog) extract(path string, info os.FileInfo, err error) error 
 	//Looking for item with newfound id to get reference to the image itself
 	for _, i := range b.Items {
 		if i.Id == id {
-			cover = i.Ref
+			coverPath = i.Ref
 			break
 		}
 	}
 	//Go on if found image path
-	if cover != "" {
+	var Image []byte
+	if coverPath != "" {
 		//Image path in .opf file is relative
 		if filepath.Dir(c.Path.P) != "." {
-			cover = filepath.Dir(c.Path.P) + "/" + cover
+			coverPath = filepath.Dir(c.Path.P) + "/" + coverPath
 		}
-		//Looking for image
-		var cont *zip.File
-		for _, f := range r.File {
-			if f.FileHeader.Name == cover {
-				cont = f
-				break
-			}
-		}
-		if cont == nil {
-			return errors.New(cover + " not found")
-		}
-		//Copying cover outside of .zip with the new name
-		cover = strings.TrimSuffix(Path, ".epub") + filepath.Ext(cont.FileHeader.Name)
-		cov, err := os.Create(cover)
+
+		Image, err = findAndRead(coverPath, r)
 		if err != nil {
-			return err
-		}
-		reader, err := cont.Open()
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(cov, reader)
-		if err != nil {
-			return err
-		}
-		if reader.Close() != nil {
 			return err
 		}
 	}
-			
-	bc.books = append(bc.books, Book{b.Title, b.Creator, b.Subject, b.Description, b.Language, Path, cover})
+
+	bc.books = append(bc.books, Book{b.Title, b.Creator, b.Subject, b.Description, b.Language, Path, Image})
 	log.Println(b.Title)
 	return nil
 }
